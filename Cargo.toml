@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["zhongyi"]
 description = "An AppCtx implementation in Rust, like ApplicationContext in SpringBoot"
 readme = "README.md"
-license = "MIT License"
+license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
