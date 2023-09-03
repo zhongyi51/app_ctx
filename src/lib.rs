@@ -1,5 +1,7 @@
 use std::any::{type_name, Any};
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex,Weak};
@@ -65,6 +67,42 @@ impl<T> Deref for RefWrapper<T> {
     }
 }
 
+/// error type for bean not initialized
+pub struct BeanNotInitializedError{
+    meta:BeanMetadata
+}
+
+impl Debug for BeanNotInitializedError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f,"bean with type {} and name {} is not initialized with `construct_bean` method",self.meta.type_name,self.meta.bean_name)
+    }
+}
+
+impl Display for BeanNotInitializedError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f,"bean with type {} and name {} is not initialized with `construct_bean` method",self.meta.type_name,self.meta.bean_name)
+    }
+}
+
+impl Error for BeanNotInitializedError{}
+
+/// error type for acquire bean after related `AppContext` is dropped
+pub struct AppContextDroppedError;
+
+impl Debug for AppContextDroppedError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f,"application context is dropped, all related beans are dropped too")
+    }
+}
+
+impl Display for AppContextDroppedError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f,"application context is dropped, all related beans are dropped too")
+    }
+}
+
+impl Error for AppContextDroppedError{}
+
 
 /// the weak reference of bean, avoiding circular references
 pub struct BeanRef<T> {
@@ -74,12 +112,12 @@ pub struct BeanRef<T> {
 impl<T> BeanRef<T> {
     /// acquire the bean, if corresponding app context is dropped, `None`
     /// will be returned
-    pub fn try_acquire(&self) -> Option<RefWrapper<T>> {
-        let arc_ref = self
+    pub fn try_acquire(&self) -> Result<RefWrapper<T>,AppContextDroppedError> {
+        self
             .inner
             .upgrade()
-            .map(|c|RefWrapper(c));
-        arc_ref
+            .map(|c|RefWrapper(c))
+            .ok_or(AppContextDroppedError)
     }
 
     /// acquire the bean, if corresponding app context is dropped,
@@ -87,6 +125,11 @@ impl<T> BeanRef<T> {
     pub fn acquire(&self)->RefWrapper<T>{
         self.try_acquire()
             .expect("app context is dropped, all beans are not acquirable")
+    }
+
+    /// check whether the `AppContext` related to this bean is dropped
+    pub fn is_active(&self) ->bool{
+        self.try_acquire().is_ok()
     }
 }
 
@@ -177,9 +220,11 @@ impl AppContextBuilder {
         }
     }
 
+    /// acquire the `BeanRef` of a bean
+    /// because of the initialization order, returned `BeanRef` may not be initialized
     /// the method `acquire_bean_or_init` only requires immutable reference, so
     /// the beans which implements `BuildFromContext` can invoke it during the construction
-    pub fn acquire_bean_or_init<T>(&self, name: &'static str) -> BeanRef<T>
+    pub fn acquire_bean_or_init<T>(&self,_ty:BeanType<T>, name: &'static str) -> BeanRef<T>
         where
             T: Send + Sync + 'static,
     {
@@ -195,8 +240,8 @@ impl AppContextBuilder {
             .build_bean_ref()
     }
 
-    /// in contrast, this method is only invoked during the initialization, to
-    /// register all beans
+    /// construct a bean and hand over to `AppContextBuilder`
+    /// the bean type must implement `BuildFromContext`
     pub fn construct_bean<T, E,Err>(self, _ty: BeanType<T>, name: &'static str, extras: E) ->Result<Self,Err>
         where
             T: Send + Sync + BuildFromContext<E,Err> + 'static,
@@ -213,6 +258,8 @@ impl AppContextBuilder {
         Ok(self)
     }
 
+    /// construct a bean and hand over to `AppContextBuilder`
+    /// the bean type must implement `BuildFromContextAsync`
     pub async fn construct_bean_async<T, E,Err>(self, _ty: BeanType<T>, name: &'static str, extras: E) ->Result<Self,Err>
         where
             T: Send + Sync + BuildFromContextAsync<E,Err> + 'static,
@@ -229,13 +276,20 @@ impl AppContextBuilder {
         Ok(self)
     }
 
-    /// when finish construction, we can create `AppContext` without Mutex
+    /// finish construction and create `AppContext` without Mutex
     /// this method will go over all beans and ensure all beans are initialized
-    pub fn build(self)->AppContext{
-
-        AppContext{
-            inner: Arc::new(self.inner.into_inner().expect("unexpected lock error")),
+    pub fn build(self)->Result<AppContext,BeanNotInitializedError>{
+        if let Some((uninit_meta,_))=self.inner
+            .lock()
+            .expect("unexpected lock")
+            .bean_map
+            .iter()
+            .find(|(meta,bean)|!bean.initialized()){
+            return Err(BeanNotInitializedError{meta:uninit_meta.clone()});
         }
+        Ok(AppContext{
+            inner: Arc::new(self.inner.into_inner().expect("unexpected lock")),
+        })
     }
 }
 
@@ -308,9 +362,9 @@ mod tests {
     impl BuildFromContext<(),()> for ServiceA {
         fn build_from(ctx: &AppContextBuilder, extras: ()) -> Result<Self,()> {
             Ok(ServiceA {
-                svc_b: ctx.acquire_bean_or_init("b"),
+                svc_b: ctx.acquire_bean_or_init(ServiceB::BEAN_TYPE,"b"),
 
-                dao: ctx.acquire_bean_or_init("c"),
+                dao: ctx.acquire_bean_or_init(DaoC::BEAN_TYPE,"c"),
             })
         }
     }
@@ -338,8 +392,8 @@ mod tests {
     impl BuildFromContext<u32,()> for ServiceB {
         fn build_from(ctx: &AppContextBuilder, extras: u32) -> Result<Self,()> {
             Ok(ServiceB {
-                svc_a: ctx.acquire_bean_or_init("a"),
-                dao: ctx.acquire_bean_or_init("c"),
+                svc_a: ctx.acquire_bean_or_init(ServiceA::BEAN_TYPE,"a"),
+                dao: ctx.acquire_bean_or_init(DaoC::BEAN_TYPE,"c"),
                 config_val: extras,
             })
         }
@@ -393,32 +447,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn it_works() {
-        let mut ctxb = AppContextBuilder::new();
+    async fn it_works()->anyhow::Result<()> {
+        let svc_a={
+            //register beans with circular references
+            let ctx = AppContextBuilder::new()
+                .construct_bean(ServiceA::BEAN_TYPE, "a", ())
+                .unwrap()
+                .construct_bean(ServiceB::BEAN_TYPE, "b", 32)
+                .unwrap()
+                .construct_bean(DaoC::BEAN_TYPE, "c", HashMap::new())
+                .unwrap()
+                .construct_bean_async(DaoD::BEAN_TYPE, "d", 5_usize)
+                .await
+                .unwrap()
+                .build()?;
 
-        //register beans with circular references
+            //test each bean
+            let svc_a = ctx.acquire_bean(ServiceA::BEAN_TYPE, "a");
+            svc_a.acquire().check();
+
+            let svc_b = ctx.acquire_bean(ServiceB::BEAN_TYPE, "b");
+            svc_b.acquire().check();
+
+            let dao_c = ctx.acquire_bean(DaoC::BEAN_TYPE, "c");
+            dao_c.acquire().check();
+
+            let dao_d = ctx.acquire_bean(DaoD::BEAN_TYPE, "d");
+            dao_d.acquire().check();
+
+            //finally, all beans should be dropped
+
+            svc_a
+        };
+        //if the app context is dropped, all beans become invalid
+        assert!(!svc_a.is_active());
+
+        //there will be an error if some beans are not set
         let ctx=AppContextBuilder::new()
-            .construct_bean(ServiceA::BEAN_TYPE, "a", ())
-            .unwrap()
-            .construct_bean(ServiceB::BEAN_TYPE, "b", 32)
-            .unwrap()
-            .construct_bean(DaoC::BEAN_TYPE, "c", HashMap::new())
-            .unwrap()
-            .construct_bean_async(DaoD::BEAN_TYPE, "d", 5_usize)
-            .await
+            .construct_bean(ServiceA::BEAN_TYPE,"a",())
             .unwrap()
             .build();
+        assert!(ctx.is_err());
 
-        //test each bean
-        let svc_a = ctx.acquire_bean(ServiceA::BEAN_TYPE, "a");
-        svc_a.acquire().check();
-
-        let svc_b = ctx.acquire_bean(ServiceB::BEAN_TYPE, "b");
-        svc_b.acquire().check();
-
-        let dao_c = ctx.acquire_bean(DaoC::BEAN_TYPE, "c");
-        dao_c.acquire().check();
-
-        //finally, all beans should be dropped
+        Ok(())
     }
 }
