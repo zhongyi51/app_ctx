@@ -1,27 +1,26 @@
+use once_cell::sync::OnceCell;
 use std::any::{type_name, Any};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::sync::{Arc, Mutex,Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
-use once_cell::sync::OnceCell;
+use std::sync::{Arc, Mutex, Weak};
 
 /// metadata of a bean. it can be used as map key
-#[derive(Hash,Eq, PartialEq,Clone)]
-pub struct BeanMetadata{
+#[derive(Hash, Eq, PartialEq, Clone)]
+pub struct BeanMetadata {
     /// typename of the bean, such as `XXXService`
-    type_name:&'static str,
+    type_name: &'static str,
     /// an identifier for the bean, to distinguish different
     /// beans with same type name
-    bean_name:&'static str
+    bean_name: &'static str,
 }
 
-impl BeanMetadata{
-    
-    pub(crate) fn from_type<T>(name:&'static str)->BeanMetadata{
-        BeanMetadata{
+impl BeanMetadata {
+    pub(crate) fn from_type<T>(name: &'static str) -> BeanMetadata {
+        BeanMetadata {
             type_name: type_name::<T>(),
             bean_name: name,
         }
@@ -31,28 +30,29 @@ impl BeanMetadata{
 /// A trait for beans which can be created from `AppContextBuilder`.
 /// `ctx` is the AppContext for acquiring lazy-initialized beans,
 /// and `extras` are extra params for this build.
-pub trait BuildFromContext<E,Err> {
+pub trait BuildFromContext<E, Err> {
     /// build the beans from
-    fn build_from(ctx: &AppContextBuilder, extras: E) -> Result<Self,Err> where Self:Sized;
+    fn build_from(ctx: &AppContextBuilder, extras: E) -> Result<Self, Err>
+    where
+        Self: Sized;
 }
-
 
 /// async implementation for building context
 #[async_trait::async_trait]
-pub trait BuildFromContextAsync<E,Err> {
-    async fn build_from(ctx: &AppContextBuilder, extras: E) -> Result<Self,Err> where Self:Sized;
+pub trait BuildFromContextAsync<E, Err> {
+    async fn build_from(ctx: &AppContextBuilder, extras: E) -> Result<Self, Err>
+    where
+        Self: Sized;
 }
 
 /// like `Class<T>` in java
 pub struct BeanType<T>(PhantomData<T>);
 
-pub trait BeanTypeOf<T>{
-
-    const BEAN_TYPE:BeanType<T>;
-
+pub trait BeanTypeOf<T> {
+    const BEAN_TYPE: BeanType<T>;
 }
 
-impl<T> BeanTypeOf<T> for T{
+impl<T> BeanTypeOf<T> for T {
     const BEAN_TYPE: BeanType<T> = BeanType(PhantomData);
 }
 
@@ -68,41 +68,54 @@ impl<T> Deref for RefWrapper<T> {
 }
 
 /// error type for bean not initialized
-pub struct BeanNotInitializedError{
-    meta:BeanMetadata
+pub struct BeanNotInitializedError {
+    meta: BeanMetadata,
 }
 
 impl Debug for BeanNotInitializedError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f,"bean with type {} and name {} is not initialized with `construct_bean` method",self.meta.type_name,self.meta.bean_name)
+        write!(
+            f,
+            "bean with type {} and name {} is not initialized with `construct_bean` method",
+            self.meta.type_name, self.meta.bean_name
+        )
     }
 }
 
 impl Display for BeanNotInitializedError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f,"bean with type {} and name {} is not initialized with `construct_bean` method",self.meta.type_name,self.meta.bean_name)
+        write!(
+            f,
+            "bean with type {} and name {} is not initialized with `construct_bean` method",
+            self.meta.type_name, self.meta.bean_name
+        )
     }
 }
 
-impl Error for BeanNotInitializedError{}
+impl Error for BeanNotInitializedError {}
 
 /// error type for acquire bean after related `AppContext` is dropped
 pub struct AppContextDroppedError;
 
 impl Debug for AppContextDroppedError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f,"application context is dropped, all related beans are dropped too")
+        write!(
+            f,
+            "application context is dropped, all related beans are dropped too"
+        )
     }
 }
 
 impl Display for AppContextDroppedError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f,"application context is dropped, all related beans are dropped too")
+        write!(
+            f,
+            "application context is dropped, all related beans are dropped too"
+        )
     }
 }
 
-impl Error for AppContextDroppedError{}
-
+impl Error for AppContextDroppedError {}
 
 /// the weak reference of bean, avoiding circular references
 pub struct BeanRef<T> {
@@ -112,37 +125,36 @@ pub struct BeanRef<T> {
 impl<T> BeanRef<T> {
     /// acquire the bean, if corresponding app context is dropped, `None`
     /// will be returned
-    pub fn try_acquire(&self) -> Result<RefWrapper<T>,AppContextDroppedError> {
-        self
-            .inner
+    pub fn try_acquire(&self) -> Result<RefWrapper<T>, AppContextDroppedError> {
+        self.inner
             .upgrade()
-            .map(|c|RefWrapper(c))
+            .map(|c| RefWrapper(c))
             .ok_or(AppContextDroppedError)
     }
 
     /// acquire the bean, if corresponding app context is dropped,
     /// a panic will be thrown
-    pub fn acquire(&self)->RefWrapper<T>{
+    pub fn acquire(&self) -> RefWrapper<T> {
         self.try_acquire()
             .expect("app context is dropped, all beans are not acquirable")
     }
 
     /// check whether the `AppContext` related to this bean is dropped
-    pub fn is_active(&self) ->bool{
+    pub fn is_active(&self) -> bool {
         self.try_acquire().is_ok()
     }
 }
 
 /// a wrapper for `Arc<dyn Any +Send +Sync>`, to store helper data
-pub struct BeanWrapper{
-    bean:Arc<dyn Any+Send+Sync>,
-    initialized:AtomicBool,
-    meta:BeanMetadata
+pub struct BeanWrapper {
+    bean: Arc<dyn Any + Send + Sync>,
+    initialized: AtomicBool,
+    meta: BeanMetadata,
 }
 
-impl Clone for BeanWrapper{
+impl Clone for BeanWrapper {
     fn clone(&self) -> Self {
-        Self{
+        Self {
             bean: self.bean.clone(),
             initialized: AtomicBool::new(self.initialized.load(Ordering::Acquire)),
             meta: self.meta.clone(),
@@ -150,12 +162,13 @@ impl Clone for BeanWrapper{
     }
 }
 
-impl BeanWrapper{
-
+impl BeanWrapper {
     /// wrap a `OnceCell` and meta, to erase its type
-    pub(crate) fn wrap<T>(bean:OnceCell<T>,meta:BeanMetadata)->Self
-    where T:Send+Sync+'static{
-        Self{
+    pub(crate) fn wrap<T>(bean: OnceCell<T>, meta: BeanMetadata) -> Self
+    where
+        T: Send + Sync + 'static,
+    {
+        Self {
             initialized: AtomicBool::new(bean.get().is_some()),
             bean: Arc::new(bean),
             meta,
@@ -164,37 +177,39 @@ impl BeanWrapper{
 
     /// because we do not know its type, we cannot downcast
     /// it into OnceCell, so we need to use an extra field
-    pub(crate) fn initialized(&self)->bool{
+    pub(crate) fn initialized(&self) -> bool {
         self.initialized.load(Ordering::Acquire)
     }
 
     /// build `BeanRef<T>` from inner arc
-    pub(crate) fn build_bean_ref<T>(&self)->BeanRef<T>
-    where T:Send+Sync+'static{
-        let weak_arc=self.bean
+    pub(crate) fn build_bean_ref<T>(&self) -> BeanRef<T>
+    where
+        T: Send + Sync + 'static,
+    {
+        let weak_arc = self
+            .bean
             .clone()
             .downcast::<OnceCell<T>>()
             .ok()
-            .map(|c|Arc::downgrade(&c))
+            .map(|c| Arc::downgrade(&c))
             .expect("bean type is not matched");
-        BeanRef{
-            inner: weak_arc,
-        }
+        BeanRef { inner: weak_arc }
     }
 
     /// wrap the bean into it
-    pub(crate) fn set_inner<T>(&self,bean:T)
-    where T:Send+Sync+'static{
+    pub(crate) fn set_inner<T>(&self, bean: T)
+    where
+        T: Send + Sync + 'static,
+    {
         self.bean
             .clone()
             .downcast::<OnceCell<T>>()
             .ok()
-            .map(|c|c.set(bean).ok())
+            .map(|c| c.set(bean).ok())
             .flatten()
             .expect("bean is setted before");
-        self.initialized.store(true,Ordering::Release);
+        self.initialized.store(true, Ordering::Release);
     }
-
 }
 
 /// the inner storage for beans
@@ -224,75 +239,87 @@ impl AppContextBuilder {
     /// because of the initialization order, returned `BeanRef` may not be initialized
     /// the method `acquire_bean_or_init` only requires immutable reference, so
     /// the beans which implements `BuildFromContext` can invoke it during the construction
-    pub fn acquire_bean_or_init<T>(&self,_ty:BeanType<T>, name: &'static str) -> BeanRef<T>
-        where
-            T: Send + Sync + 'static,
+    pub fn acquire_bean_or_init<T>(&self, _ty: BeanType<T>, name: &'static str) -> BeanRef<T>
+    where
+        T: Send + Sync + 'static,
     {
-        let meta=BeanMetadata::from_type::<T>(name);
-        
-        self
-            .inner
+        let meta = BeanMetadata::from_type::<T>(name);
+
+        self.inner
             .lock()
             .expect("unexpected lock")
             .bean_map
             .entry(meta.clone())
-            .or_insert(BeanWrapper::wrap(OnceCell::<T>::new(),meta))
+            .or_insert(BeanWrapper::wrap(OnceCell::<T>::new(), meta))
             .build_bean_ref()
     }
 
     /// construct a bean and hand over to `AppContextBuilder`
     /// the bean type must implement `BuildFromContext`
-    pub fn construct_bean<T, E,Err>(self, _ty: BeanType<T>, name: &'static str, extras: E) ->Result<Self,Err>
-        where
-            T: Send + Sync + BuildFromContext<E,Err> + 'static,
+    pub fn construct_bean<T, E, Err>(
+        self,
+        _ty: BeanType<T>,
+        name: &'static str,
+        extras: E,
+    ) -> Result<Self, Err>
+    where
+        T: Send + Sync + BuildFromContext<E, Err> + 'static,
     {
-        let meta=BeanMetadata::from_type::<T>(name);
+        let meta = BeanMetadata::from_type::<T>(name);
         let bean = T::build_from(&self, extras)?;
         self.inner
             .lock()
             .expect("unexpected lock")
             .bean_map
             .entry(meta.clone())
-            .or_insert(BeanWrapper::wrap(OnceCell::<T>::new(),meta.clone()))
+            .or_insert(BeanWrapper::wrap(OnceCell::<T>::new(), meta.clone()))
             .set_inner(bean);
         Ok(self)
     }
 
     /// construct a bean and hand over to `AppContextBuilder`
     /// the bean type must implement `BuildFromContextAsync`
-    pub async fn construct_bean_async<T, E,Err>(self, _ty: BeanType<T>, name: &'static str, extras: E) ->Result<Self,Err>
-        where
-            T: Send + Sync + BuildFromContextAsync<E,Err> + 'static,
+    pub async fn construct_bean_async<T, E, Err>(
+        self,
+        _ty: BeanType<T>,
+        name: &'static str,
+        extras: E,
+    ) -> Result<Self, Err>
+    where
+        T: Send + Sync + BuildFromContextAsync<E, Err> + 'static,
     {
-        let meta=BeanMetadata::from_type::<T>(name);
+        let meta = BeanMetadata::from_type::<T>(name);
         let bean = T::build_from(&self, extras).await?;
         self.inner
             .lock()
             .expect("unexpected lock")
             .bean_map
             .entry(meta.clone())
-            .or_insert(BeanWrapper::wrap(OnceCell::<T>::new(),meta))
+            .or_insert(BeanWrapper::wrap(OnceCell::<T>::new(), meta))
             .set_inner(bean);
         Ok(self)
     }
 
     /// finish construction and create `AppContext` without Mutex
     /// this method will go over all beans and ensure all beans are initialized
-    pub fn build(self)->Result<AppContext,BeanNotInitializedError>{
-        if let Some((uninit_meta,_))=self.inner
+    pub fn build(self) -> Result<AppContext, BeanNotInitializedError> {
+        if let Some((uninit_meta, _)) = self
+            .inner
             .lock()
             .expect("unexpected lock")
             .bean_map
             .iter()
-            .find(|(meta,bean)|!bean.initialized()){
-            return Err(BeanNotInitializedError{meta:uninit_meta.clone()});
+            .find(|(meta, bean)| !bean.initialized())
+        {
+            return Err(BeanNotInitializedError {
+                meta: uninit_meta.clone(),
+            });
         }
-        Ok(AppContext{
+        Ok(AppContext {
             inner: Arc::new(self.inner.into_inner().expect("unexpected lock")),
         })
     }
 }
-
 
 /// the context to store all beans
 /// `AppContext` owns the ownership of all registered beans
@@ -301,45 +328,69 @@ pub struct AppContext {
     inner: Arc<AppContextInner>,
 }
 
-impl Clone for AppContext{
+impl Clone for AppContext {
     fn clone(&self) -> Self {
-        Self{
-            inner:self.inner.clone()
+        Self {
+            inner: self.inner.clone(),
         }
     }
 }
 
-impl AppContext{
-
-
+impl AppContext {
     /// the method `try_acquire_bean` can be used to get bean from runtime,
     /// like `ApplicationContext` in SpringBoot
     pub fn try_acquire_bean<T>(&self, name: &'static str) -> Option<BeanRef<T>>
-        where
-            T: Send + Sync + 'static,
+    where
+        T: Send + Sync + 'static,
     {
-        let meta=BeanMetadata::from_type::<T>(name);
+        let meta = BeanMetadata::from_type::<T>(name);
 
-       self
-            .inner
+        self.inner
             .bean_map
             .get(&meta)
             .cloned()
-            .map(|w|w.build_bean_ref())
+            .map(|w| w.build_bean_ref())
     }
 
     pub fn acquire_bean<T>(&self, _ty: BeanType<T>, name: &'static str) -> BeanRef<T>
-        where
-            T: Send + Sync + 'static,{
-        self.try_acquire_bean(name).expect("bean is not initialized")
+    where
+        T: Send + Sync + 'static,
+    {
+        self.try_acquire_bean(name)
+            .expect("bean is not initialized")
     }
 
+    /// the method `try_acquire_beans_by_type` can be used to get multiple beans with same type
+    pub fn acquire_beans_by_type<T>(&self, _ty: BeanType<T>) -> Vec<BeanRef<T>>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.inner
+            .bean_map
+            .iter()
+            .filter(|(k, v)| k.type_name == type_name::<T>())
+            .map(|(k, v)| v.clone().build_bean_ref())
+            .collect()
+    }
+
+    /// the method `try_acquire_beans_by)name` can be used to get multiple beans with same name
+    pub fn acquire_beans_by_name<T>(&self, name: &'static str) -> Vec<BeanRef<T>>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.inner
+            .bean_map
+            .iter()
+            .filter(|(k, v)| k.bean_name == name)
+            .map(|(k, v)| v.clone().build_bean_ref())
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use async_trait::async_trait;
     use super::*;
+    use async_trait::async_trait;
 
     pub struct ServiceA {
         svc_b: BeanRef<ServiceB>,
@@ -359,12 +410,12 @@ mod tests {
         }
     }
 
-    impl BuildFromContext<(),()> for ServiceA {
-        fn build_from(ctx: &AppContextBuilder, extras: ()) -> Result<Self,()> {
+    impl BuildFromContext<(), ()> for ServiceA {
+        fn build_from(ctx: &AppContextBuilder, extras: ()) -> Result<Self, ()> {
             Ok(ServiceA {
-                svc_b: ctx.acquire_bean_or_init(ServiceB::BEAN_TYPE,"b"),
+                svc_b: ctx.acquire_bean_or_init(ServiceB::BEAN_TYPE, "b"),
 
-                dao: ctx.acquire_bean_or_init(DaoC::BEAN_TYPE,"c"),
+                dao: ctx.acquire_bean_or_init(DaoC::BEAN_TYPE, "c"),
             })
         }
     }
@@ -389,11 +440,11 @@ mod tests {
         }
     }
 
-    impl BuildFromContext<u32,()> for ServiceB {
-        fn build_from(ctx: &AppContextBuilder, extras: u32) -> Result<Self,()> {
+    impl BuildFromContext<u32, ()> for ServiceB {
+        fn build_from(ctx: &AppContextBuilder, extras: u32) -> Result<Self, ()> {
             Ok(ServiceB {
-                svc_a: ctx.acquire_bean_or_init(ServiceA::BEAN_TYPE,"a"),
-                dao: ctx.acquire_bean_or_init(DaoC::BEAN_TYPE,"c"),
+                svc_a: ctx.acquire_bean_or_init(ServiceA::BEAN_TYPE, "a"),
+                dao: ctx.acquire_bean_or_init(DaoC::BEAN_TYPE, "c"),
                 config_val: extras,
             })
         }
@@ -415,40 +466,43 @@ mod tests {
         }
     }
 
-    impl BuildFromContext<HashMap<String, String>,()> for DaoC {
-        fn build_from(ctx: &AppContextBuilder, extras: HashMap<String, String>) -> Result<Self,()> {
+    impl BuildFromContext<HashMap<String, String>, ()> for DaoC {
+        fn build_from(
+            ctx: &AppContextBuilder,
+            extras: HashMap<String, String>,
+        ) -> Result<Self, ()> {
             Ok(DaoC { inner_map: extras })
         }
     }
 
-    pub struct DaoD{
-        inner_vec:Vec<i32>
+    pub struct DaoD {
+        inner_vec: Vec<i32>,
     }
 
-    impl Drop for DaoD{
+    impl Drop for DaoD {
         fn drop(&mut self) {
             println!("dao d is droped");
         }
     }
 
-    impl DaoD{
-        pub async fn check(&self){
+    impl DaoD {
+        pub async fn check(&self) {
             println!("dao d is ready");
         }
     }
 
     #[async_trait]
-    impl BuildFromContextAsync<usize,String> for DaoD{
-        async fn build_from(ctx: &AppContextBuilder, extras: usize) -> Result<Self,String> {
-            Ok(DaoD{
-                inner_vec:Vec::with_capacity(extras)
+    impl BuildFromContextAsync<usize, String> for DaoD {
+        async fn build_from(ctx: &AppContextBuilder, extras: usize) -> Result<Self, String> {
+            Ok(DaoD {
+                inner_vec: Vec::with_capacity(extras),
             })
         }
     }
 
     #[tokio::test]
-    async fn it_works()->anyhow::Result<()> {
-        let svc_a={
+    async fn it_works() -> anyhow::Result<()> {
+        let svc_a = {
             //register beans with circular references
             let ctx = AppContextBuilder::new()
                 .construct_bean(ServiceA::BEAN_TYPE, "a", ())
@@ -483,8 +537,8 @@ mod tests {
         assert!(!svc_a.is_active());
 
         //there will be an error if some beans are not set
-        let ctx=AppContextBuilder::new()
-            .construct_bean(ServiceA::BEAN_TYPE,"a",())
+        let ctx = AppContextBuilder::new()
+            .construct_bean(ServiceA::BEAN_TYPE, "a", ())
             .unwrap()
             .build();
         assert!(ctx.is_err());
