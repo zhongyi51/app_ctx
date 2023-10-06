@@ -1,11 +1,12 @@
 [package]
 name = "app_ctx"
-version = "0.1.3"
+version = "0.1.3-Fixed"
 edition = "2021"
 authors = ["zhongyi"]
 description = "An AppCtx implementation in Rust, like ApplicationContext in SpringBoot"
 readme = "README.md"
 license = "MIT"
+repository = "https://github.com/zhongyi51/app_ctx"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

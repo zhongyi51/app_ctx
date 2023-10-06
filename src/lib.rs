@@ -1,12 +1,10 @@
 mod error;
 
 use crate::error::{AppContextDroppedError, BeanError};
-use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use std::any::{type_name, Any};
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, };
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -42,7 +40,7 @@ pub trait BuildFromContext<E, CtxErr = (), InitErr = ()> {
     where
         Self: Sized;
 
-    /// initialization method after all beans have been built
+    /// initialization method after all beans have been built.
     /// because of potential cyclic invocations during the initialization, only
     /// immutable references are allowed
     fn init_self(&self) -> Result<(), InitErr> {
@@ -57,7 +55,7 @@ pub trait BuildFromContextAsync<E, CtxErr = (), InitErr = ()> {
     where
         Self: Sized;
 
-    /// initialization method after all beans have been built
+    /// initialization method after all beans have been built.
     /// because of potential cyclic invocations during the initialization, only
     /// immutable references are allowed
     async fn init_self(&self) -> Result<(), InitErr> {
@@ -151,11 +149,6 @@ impl BeanWrapper {
         self.initialized.load(Ordering::Acquire)
     }
 
-    /// check whether this bean needs to be initialized in async context
-    pub(crate) fn is_async_bean(&self) -> bool {
-        return false;
-    }
-
     /// build `BeanRef<T>` from inner arc
     pub(crate) fn build_bean_ref<T>(&self) -> BeanRef<T>
     where
@@ -187,14 +180,14 @@ impl BeanWrapper {
     }
 }
 
-/// the inner storage for beans
+/// the inner storage for beans.
 /// the `Arc<...>` stores beans with lazy initialization
 pub struct AppContextInner {
     bean_map: HashMap<BeanMetadata, BeanWrapper>,
 }
 
-/// the context to store all beans
-/// `AppContext` owns the ownership of all registered beans
+/// the context to store all beans.
+/// `AppContext` owns the ownership of all registered beans.
 /// When `AppContext` is dropped, all beans will be dropped too
 pub struct AppContextBuilder {
     inner: Mutex<AppContextInner>,
@@ -212,8 +205,8 @@ impl AppContextBuilder {
         }
     }
 
-    /// acquire the `BeanRef` of a bean
-    /// because of the initialization order, returned `BeanRef` may not be initialized
+    /// acquire the `BeanRef` of a bean.
+    /// because of the initialization order, returned `BeanRef` may not be initialized.
     /// the method `acquire_bean_or_init` only requires immutable reference, so
     /// the beans which implements `BuildFromContext` can invoke it during the construction
     pub fn acquire_bean_or_init<T>(&self, _ty: BeanType<T>, name: &'static str) -> BeanRef<T>
@@ -231,7 +224,7 @@ impl AppContextBuilder {
             .build_bean_ref()
     }
 
-    /// construct a bean and hand over to `AppContextBuilder`
+    /// construct a bean and hand over to `AppContextBuilder`.
     /// the bean type must implement `BuildFromContext`
     pub fn construct_bean<T, E, Err, Err2>(
         mut self,
@@ -257,7 +250,7 @@ impl AppContextBuilder {
         Ok(self)
     }
 
-    /// construct a bean and hand over to `AppContextBuilder`
+    /// construct a bean and hand over to `AppContextBuilder`.
     /// the bean type must implement `BuildFromContextAsync`
     pub async fn construct_bean_async<T, E, Err, Err2>(
         mut self,
@@ -283,8 +276,8 @@ impl AppContextBuilder {
         Ok(self)
     }
 
-    /// finish construction and create `AppContext` without Mutex
-    /// this method will go over all beans and ensure all beans are initialized
+    /// finish construction and create `AppContext` without Mutex.
+    /// this method will go over all beans and ensure all beans are initialized,
     /// but the initialization method will not be ran
     pub fn build_without_init(self) -> Result<AppContext, BeanError> {
         if let Some((uninit_meta, _)) = self
@@ -404,8 +397,8 @@ where
     }))
 }
 
-/// the context to store all beans
-/// `AppContext` owns the ownership of all registered beans
+/// the context to store all beans.
+/// `AppContext` owns the ownership of all registered beans.
 /// When `AppContext` is dropped, all beans will be dropped too
 pub struct AppContext {
     inner: Arc<AppContextInner>,
