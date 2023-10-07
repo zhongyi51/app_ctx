@@ -1,6 +1,6 @@
 [package]
 name = "app_ctx"
-version = "0.1.4-FIX"
+version = "0.1.5"
 edition = "2021"
 authors = ["zhongyi"]
 description = "An AppCtx implementation in Rust, like ApplicationContext in SpringBoot"
