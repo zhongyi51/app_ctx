@@ -461,6 +461,11 @@ impl AppContext {
             .map(|(k, v)| v.clone().build_bean_ref())
             .collect()
     }
+
+    /// whether current `AppContext` do not contains any arc clone
+    pub fn is_last_clone(&self)->bool{
+        Arc::strong_count(&self.inner)==1
+    }
 }
 
 #[cfg(test)]
@@ -617,6 +622,7 @@ mod tests {
             let dao_d = ctx.acquire_bean(DaoD::BEAN_TYPE, "d");
             dao_d.acquire().check().await;
 
+            assert!(ctx.is_last_clone());
             //finally, all beans should be dropped
 
             svc_a
