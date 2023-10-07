@@ -13,6 +13,7 @@ repository = "https://github.com/zhongyi51/app_ctx"
 once_cell = "1"
 async-trait = "0.1"
 thiserror = "1"
+crossbeam = "0.8"
 
 [dev-dependencies]
 tokio = {version = "1",features=["test-util","macros"]}

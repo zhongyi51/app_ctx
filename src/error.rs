@@ -14,18 +14,29 @@ pub enum BeanError {
     #[error("bean with type {} and name {} is async and cannot be initialized with `build_non_async` method", .0.type_name, .0.bean_name)]
     HasAsync(BeanMetadata),
 
+    /// error type for cyclic dependencies
+    #[error("cyclic dependencies detected: {}", pretty_print(.0))]
+    CyclicDependency(Vec<BeanMetadata>),
+
     /// user custom initialization error
-    #[error("an error occurred during initialization of bean {} with type {}", .0.type_name, .0.bean_name)]
-    DuringInit(BeanMetadata, Box<dyn Any + Send + Sync>),
+    #[error("custom error of bean {} with type {}: {}", .0.type_name, .0.bean_name, .1)]
+    Custom(BeanMetadata, Box<dyn Error + Send + Sync>),
+}
+
+fn pretty_print(v:&Vec<BeanMetadata>)->String{
+    v.iter()
+        .map(|m|format!("{}({})",m.bean_name,m.type_name))
+        .collect::<Vec<_>>()
+        .join(" -> ")
 }
 
 impl BeanError {
-    /// get internal error object when error occurs during initialization
+    /// get internal error object when custom error occurs
     pub fn into_internal_err<T>(self) -> Option<T>
     where
-        T: 'static,
+        T: Error+'static,
     {
-        if let BeanError::DuringInit(m, e) = self {
+        if let BeanError::Custom(m, e) = self {
             return e.downcast::<T>().ok().map(|x| *x);
         }
         return None;
