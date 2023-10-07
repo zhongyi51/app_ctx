@@ -4,7 +4,7 @@ use crate::error::{AppContextDroppedError, BeanError};
 use once_cell::sync::OnceCell;
 use std::any::{type_name, Any};
 use std::collections::HashMap;
-use std::fmt::{Debug, };
+use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::Deref;

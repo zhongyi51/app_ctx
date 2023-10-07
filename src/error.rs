@@ -19,6 +19,19 @@ pub enum BeanError {
     DuringInit(BeanMetadata, Box<dyn Any + Send + Sync>),
 }
 
+impl BeanError {
+    /// get internal error object when error occurs during initialization
+    pub fn into_internal_err<T>(self) -> Option<T>
+    where
+        T: 'static,
+    {
+        if let BeanError::DuringInit(m, e) = self {
+            return e.downcast::<T>().ok().map(|x| *x);
+        }
+        return None;
+    }
+}
+
 /// error type for acquire bean after related `AppContext` is dropped
 pub struct AppContextDroppedError;
 
