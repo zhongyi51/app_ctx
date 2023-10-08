@@ -1,20 +1,19 @@
 mod error;
+mod event;
 mod util;
 
 use crate::error::{AppContextDroppedError, BeanError};
+use crossbeam::atomic::AtomicCell;
 use once_cell::sync::OnceCell;
 use std::any::{type_name, Any};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Formatter};
-use std::fs::Metadata;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use crossbeam::atomic::AtomicCell;
 
 /// metadata of a bean. it can be used as map key
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -38,11 +37,9 @@ impl BeanMetadata {
 /// the priority of beans.
 /// the beans with higher priority will be initialized earlier
 /// and destroyed later
-pub enum BeanPriority{
-
+pub enum BeanPriority {
     /// dependencies of this bean
     DependsOn(Vec<BeanMetadata>),
-
 }
 
 /// A trait for beans which can be created from `AppContextBuilder`.
@@ -57,20 +54,20 @@ pub trait BuildFromContext<E, CtxErr = ()> {
     /// initialization method after all beans have been built.
     /// because of potential cyclic invocations during the initialization, only
     /// immutable references are allowed
-    fn init_self(&self) -> Result<(), Box<dyn Error+Send+Sync>> {
+    fn init_self(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         return Ok(());
     }
 
     /// finalize method before beans' destruction.
     /// this function will not be automatically called if you do not
     /// explicitly invoke `destroy_non_async`
-    fn clean_self(&self) -> Result<(),Box<dyn Error+Send+Sync>>{
+    fn clean_self(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         return Ok(());
     }
 
     /// the priority of the this bean.
     /// default is empty
-    fn priority() -> BeanPriority{
+    fn priority() -> BeanPriority {
         return BeanPriority::DependsOn(Vec::new());
     }
 }
@@ -82,24 +79,23 @@ pub trait BuildFromContextAsync<E, CtxErr = ()> {
     where
         Self: Sized;
 
-
     /// initialization method after all beans have been built.
     /// because of potential cyclic invocations during the initialization, only
     /// immutable references are allowed
-    async fn init_self(&self) -> Result<(), Box<dyn Error+Send+Sync>> {
+    async fn init_self(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         return Ok(());
     }
 
     /// finalize method before beans' destruction.
     /// this function will not be automatically called if you do not
     /// explicitly invoke `destroy_non_async`
-    async fn clean_self(&self) -> Result<(),Box<dyn Error+Send+Sync>>{
+    async fn clean_self(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         return Ok(());
     }
 
     /// the priority of the this bean.
     /// default is empty
-    fn priority() -> BeanPriority{
+    fn priority() -> BeanPriority {
         return BeanPriority::DependsOn(Vec::new());
     }
 }
@@ -160,25 +156,24 @@ impl<T> BeanRef<T> {
 /// after running of `PostConstruct`, it becomes `Using`,
 /// after running of `PreDestroy`, it becomes `Destroyed`
 /// after dropping of the bean, it becomes `Inactive`
-#[derive(Clone,Copy,Eq,PartialEq,Debug)]
-pub enum BeanStatus{
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub enum BeanStatus {
     NotInit,
     PostConstruct,
     Using,
     Destroyed,
-    Inactive
+    Inactive,
 }
 
 /// a wrapper for `Arc<dyn Any +Send +Sync>`, to store helper data
 pub struct BeanWrapper {
     bean: Arc<dyn Any + Send + Sync>,
-    status:AtomicCell<BeanStatus>,
+    status: AtomicCell<BeanStatus>,
     meta: BeanMetadata,
-    is_async:OnceCell<bool>,
-    init_fn:OnceCell<CustomFnEnum>,
-    destroy_fn:OnceCell<CustomFnEnum>,
-    depends_on:OnceCell<Vec<BeanMetadata>>,
-
+    is_async: OnceCell<bool>,
+    init_fn: OnceCell<CustomFnEnum>,
+    destroy_fn: OnceCell<CustomFnEnum>,
+    depends_on: OnceCell<Vec<BeanMetadata>>,
 }
 
 impl Clone for BeanWrapper {
@@ -187,7 +182,7 @@ impl Clone for BeanWrapper {
             bean: self.bean.clone(),
             status: AtomicCell::new(self.status.load()),
             meta: self.meta.clone(),
-            is_async:self.is_async.clone(),
+            is_async: self.is_async.clone(),
             init_fn: self.init_fn.clone(),
             destroy_fn: self.destroy_fn.clone(),
             depends_on: self.depends_on.clone(),
@@ -202,58 +197,57 @@ impl BeanWrapper {
         T: Send + Sync + 'static,
     {
         Self {
-            status:AtomicCell::new(BeanStatus::NotInit),
+            status: AtomicCell::new(BeanStatus::NotInit),
             bean: Arc::new(bean),
             meta,
-            is_async:OnceCell::new(),
+            is_async: OnceCell::new(),
             init_fn: OnceCell::new(),
             destroy_fn: OnceCell::new(),
             depends_on: OnceCell::new(),
         }
     }
 
-    pub(crate) fn sync_one<T,E,Err>(bean: OnceCell<T>, meta: BeanMetadata) -> Self
-        where
-            T: BuildFromContext<E,Err> + Send + Sync + 'static,
+    pub(crate) fn sync_one<T, E, Err>(bean: OnceCell<T>, meta: BeanMetadata) -> Self
+    where
+        T: BuildFromContext<E, Err> + Send + Sync + 'static,
     {
         Self {
-            status:AtomicCell::new(BeanStatus::PostConstruct),
+            status: AtomicCell::new(BeanStatus::PostConstruct),
             bean: Arc::new(bean),
             meta,
-            is_async:OnceCell::with_value(false),
+            is_async: OnceCell::with_value(false),
             init_fn: OnceCell::with_value(build_init_fn::<E, Err, T>()),
-            destroy_fn: OnceCell::with_value(build_destroy_fn::<E,Err,T>()),
+            destroy_fn: OnceCell::with_value(build_destroy_fn::<E, Err, T>()),
             depends_on: OnceCell::with_value({
-                if let BeanPriority::DependsOn(v)=T::priority(){
+                if let BeanPriority::DependsOn(v) = T::priority() {
                     v
-                }else {
+                } else {
                     vec![]
                 }
             }),
         }
     }
 
-    pub(crate) fn async_one<T,E,Err>(bean: OnceCell<T>, meta: BeanMetadata) -> Self
-        where
-            T: BuildFromContextAsync<E,Err> + Send + Sync + 'static,
+    pub(crate) fn async_one<T, E, Err>(bean: OnceCell<T>, meta: BeanMetadata) -> Self
+    where
+        T: BuildFromContextAsync<E, Err> + Send + Sync + 'static,
     {
         Self {
-            status:AtomicCell::new(BeanStatus::PostConstruct),
+            status: AtomicCell::new(BeanStatus::PostConstruct),
             bean: Arc::new(bean),
             meta,
-            is_async:OnceCell::with_value(true),
+            is_async: OnceCell::with_value(true),
             init_fn: OnceCell::with_value(build_init_fn_async::<E, Err, T>()),
-            destroy_fn: OnceCell::with_value(build_destroy_fn_async::<E,Err,T>()),
+            destroy_fn: OnceCell::with_value(build_destroy_fn_async::<E, Err, T>()),
             depends_on: OnceCell::with_value({
-                if let BeanPriority::DependsOn(v)=T::priority(){
+                if let BeanPriority::DependsOn(v) = T::priority() {
                     v
-                }else {
+                } else {
                     vec![]
                 }
             }),
         }
     }
-
 
     /// because we do not know its type, we cannot downcast
     /// it into OnceCell, so we need to use an extra field
@@ -277,9 +271,9 @@ impl BeanWrapper {
     }
 
     /// wrap the bean into it
-    pub(crate) fn set_inner_sync<T,E,Err>(&self, bean: T)
+    pub(crate) fn set_inner_sync<T, E, Err>(&self, bean: T)
     where
-        T: BuildFromContext<E,Err>+Send + Sync + 'static,
+        T: BuildFromContext<E, Err> + Send + Sync + 'static,
     {
         self.bean
             .clone()
@@ -288,23 +282,29 @@ impl BeanWrapper {
             .map(|c| c.set(bean).ok())
             .flatten()
             .expect("bean is set before");
-        self.init_fn.set(build_init_fn::<E,Err,T>()).expect("bean is set before");
-        self.destroy_fn.set(build_destroy_fn::<E,Err,T>()).expect("bean is set before");
-        self.depends_on.set({
-            if let BeanPriority::DependsOn(v)=T::priority(){
-                v
-            }else {
-                vec![]
-            }
-        }).expect("bean is set before");
+        self.init_fn
+            .set(build_init_fn::<E, Err, T>())
+            .expect("bean is set before");
+        self.destroy_fn
+            .set(build_destroy_fn::<E, Err, T>())
+            .expect("bean is set before");
+        self.depends_on
+            .set({
+                if let BeanPriority::DependsOn(v) = T::priority() {
+                    v
+                } else {
+                    vec![]
+                }
+            })
+            .expect("bean is set before");
         self.is_async.set(false).expect("bean is set before");
         self.status.swap(BeanStatus::PostConstruct);
     }
 
     /// wrap the bean into it
-    pub(crate) fn set_inner_async<T,E,Err>(&self, bean: T)
-        where
-            T: BuildFromContextAsync<E,Err>+Send + Sync + 'static,
+    pub(crate) fn set_inner_async<T, E, Err>(&self, bean: T)
+    where
+        T: BuildFromContextAsync<E, Err> + Send + Sync + 'static,
     {
         self.bean
             .clone()
@@ -313,71 +313,67 @@ impl BeanWrapper {
             .map(|c| c.set(bean).ok())
             .flatten()
             .expect("bean is set before");
-        self.init_fn.set(build_init_fn_async::<E,Err,T>()).expect("bean is set before");
-        self.destroy_fn.set(build_destroy_fn_async::<E,Err,T>()).expect("bean is set before");
-        self.depends_on.set({
-            if let BeanPriority::DependsOn(v)=T::priority(){
-                v
-            }else {
-                vec![]
-            }
-        }).expect("bean is set before");
+        self.init_fn
+            .set(build_init_fn_async::<E, Err, T>())
+            .expect("bean is set before");
+        self.destroy_fn
+            .set(build_destroy_fn_async::<E, Err, T>())
+            .expect("bean is set before");
+        self.depends_on
+            .set({
+                if let BeanPriority::DependsOn(v) = T::priority() {
+                    v
+                } else {
+                    vec![]
+                }
+            })
+            .expect("bean is set before");
         self.is_async.set(true).expect("bean is set before");
         self.status.swap(BeanStatus::PostConstruct);
     }
 
-    pub(crate) fn run_init_fn(&self)->Result<(),BeanError>{
-        let f_enum=self.init_fn
-            .get()
-            .expect("unexpected get error");
-        if let CustomFnEnum::Sync(f)=f_enum{
+    pub(crate) fn run_init_fn(&self) -> Result<(), BeanError> {
+        let f_enum = self.init_fn.get().expect("unexpected get error");
+        if let CustomFnEnum::Sync(f) = f_enum {
             f(self.clone())?;
-        }else{
+        } else {
             panic!("invoke async function in sync context");
         }
         Ok(())
     }
 
-    pub(crate) async fn run_init_fn_async(&self)->Result<(),BeanError>{
-        let f_enum=self.init_fn
-            .get()
-            .expect("unexpected get error");
-        if let CustomFnEnum::Async(f)=f_enum{
+    pub(crate) async fn run_init_fn_async(&self) -> Result<(), BeanError> {
+        let f_enum = self.init_fn.get().expect("unexpected get error");
+        if let CustomFnEnum::Async(f) = f_enum {
             f(self.clone()).await?;
-        }else{
+        } else {
             panic!("invoke sync function in async context");
         }
         Ok(())
     }
 
-    pub(crate) fn run_destroy_fn(&self)->Result<(),BeanError>{
-        let f_enum=self.init_fn
-            .get()
-            .expect("unexpected get error");
-        if let CustomFnEnum::Sync(f)=f_enum{
+    pub(crate) fn run_destroy_fn(&self) -> Result<(), BeanError> {
+        let f_enum = self.init_fn.get().expect("unexpected get error");
+        if let CustomFnEnum::Sync(f) = f_enum {
             f(self.clone())?;
-        }else{
+        } else {
             panic!("invoke async function in sync context");
         }
         Ok(())
     }
 
-    pub(crate) async fn run_destroy_fn_async(&self)->Result<(),BeanError>{
-        let f_enum=self.init_fn
-            .get()
-            .expect("unexpected get error");
-        if let CustomFnEnum::Async(f)=f_enum{
+    pub(crate) async fn run_destroy_fn_async(&self) -> Result<(), BeanError> {
+        let f_enum = self.init_fn.get().expect("unexpected get error");
+        if let CustomFnEnum::Async(f) = f_enum {
             f(self.clone()).await?;
-        }else{
+        } else {
             panic!("invoke sync function in async context");
         }
         Ok(())
     }
 
-    pub(crate) fn is_async(&self)->bool{
-        *self.is_async
-            .get()
-            .expect("bean is not set")
+    pub(crate) fn is_async(&self) -> bool {
+        *self.is_async.get().expect("bean is not set")
     }
 }
 
@@ -441,7 +437,7 @@ impl AppContextBuilder {
             .expect("unexpected lock")
             .bean_map
             .entry(meta.clone())
-            .or_insert(BeanWrapper::sync_one(OnceCell::<T>::new(), meta.clone()))
+            .or_insert(BeanWrapper::empty(OnceCell::<T>::new(), meta.clone()))
             .set_inner_sync(bean);
         Ok(self)
     }
@@ -464,7 +460,7 @@ impl AppContextBuilder {
             .expect("unexpected lock")
             .bean_map
             .entry(meta.clone())
-            .or_insert(BeanWrapper::async_one(OnceCell::<T>::new(), meta.clone()))
+            .or_insert(BeanWrapper::empty(OnceCell::<T>::new(), meta.clone()))
             .set_inner_async(bean);
         Ok(self)
     }
@@ -479,23 +475,27 @@ impl AppContextBuilder {
         })
     }
 
-    fn _build_dep_tree(&self,reverse:bool) -> HashMap<BeanMetadata,Vec<BeanMetadata>>{
+    fn _build_dep_tree(&self, reverse: bool) -> HashMap<BeanMetadata, Vec<BeanMetadata>> {
         self.inner
             .lock()
             .expect("unexpected lock")
             .bean_map
             .iter()
-            .flat_map(|(m,w)|{
+            .flat_map(|(m, w)| {
                 w.depends_on
                     .get()
                     .expect("unexpected init error")
                     .iter()
-                    .map(|c|if reverse {(c.clone(),m.clone())}else{(m.clone(),c.clone())})
+                    .map(|c| {
+                        if reverse {
+                            (c.clone(), m.clone())
+                        } else {
+                            (m.clone(), c.clone())
+                        }
+                    })
             })
-            .fold(HashMap::new(),|mut s,(k,v)|{
-                s.entry(k)
-                    .or_insert(Vec::new())
-                    .push(v);
+            .fold(HashMap::new(), |mut s, (k, v)| {
+                s.entry(k).or_insert(Vec::new()).push(v);
                 s
             })
     }
@@ -514,36 +514,92 @@ impl AppContextBuilder {
         Ok(())
     }
 
-    fn _check_contains_async(&self)->Result<(),BeanError>{
-        if let Some(err)=self.inner
+    fn _check_contains_async(&self) -> Result<(), BeanError> {
+        if let Some(err) = self
+            .inner
             .lock()
             .expect("unexpected lock")
             .bean_map
             .values()
-            .find(|s|s.is_async())
-            .map(|s|BeanError::HasAsync(s.meta.clone())){
-            return Err(err)
+            .find(|s| s.is_async())
+            .map(|s| BeanError::HasAsync(s.meta.clone()))
+        {
+            return Err(err);
         }
         Ok(())
     }
 
-    fn _init_recursive(beans:&impl Deref<Target=HashMap<BeanMetadata,BeanWrapper>>,dep_map:&HashMap<BeanMetadata,Vec<BeanMetadata>>, history:Vec<BeanMetadata>)->Result<(),BeanError>{
-        match history.last(){
-            None=>panic!("history must contains at least one bean"),
-            Some(v) if dep_map.get(v).is_none()=>{
+    fn _check_dependencies_cycle(history: &[BeanMetadata]) -> Result<(), BeanError> {
+        // if last bean equals to any previous bean, there must be a loop
+        match history {
+            [] | &[_] => Ok(()),
+            [prev @ .., last] if prev.contains(last) => {
+                Err(BeanError::CyclicDependency(history.to_vec()))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn _do_recursive(
+        beans: &HashMap<BeanMetadata, BeanWrapper>,
+        dep_map: &HashMap<BeanMetadata, Vec<BeanMetadata>>,
+        history: Vec<BeanMetadata>,
+        mapper: &impl Fn(&BeanWrapper) -> Result<(), BeanError>,
+        should_continue: &impl Fn(&BeanWrapper) -> bool,
+    ) -> Result<(), BeanError> {
+        Self::_check_dependencies_cycle(&history)?;
+        match history.last() {
+            None => panic!("history must contains at least one bean"),
+            Some(v) if dep_map.get(v).is_none() => {
                 // no-op
             }
-            Some(v) if dep_map.get(v).unwrap().is_empty()=>{
-                beans.get(v)
-                    .expect("unexpected bean error")
-                    .run_init_fn()?;
+            Some(v) if dep_map.get(v).unwrap().is_empty() => {
+                let bean = beans.get(v).expect("unexpected bean error");
+                if !should_continue(bean) {
+                    return Ok(());
+                }
+                mapper(bean)?;
             }
-            Some(v) =>{
-                let metas=dep_map.get(v).unwrap();
-                for meta in metas{
-                    let mut cloned =history.clone();
+            Some(v) => {
+                let metas = dep_map.get(v).unwrap();
+                for meta in metas {
+                    let mut cloned = history.clone();
                     cloned.push(meta.clone());
-                    Self::_init_recursive(beans,dep_map,cloned)?;
+                    Self::_do_recursive(beans, dep_map, cloned, mapper, should_continue)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[async_recursion::async_recursion(?Send)]
+    async fn _do_recursive_async(
+        beans: &HashMap<BeanMetadata, BeanWrapper>,
+        dep_map: &HashMap<BeanMetadata, Vec<BeanMetadata>>,
+        history: Vec<BeanMetadata>,
+        mapper: &impl Fn(&BeanWrapper) -> Pin<Box<dyn Future<Output = Result<(), BeanError>>+'_>>,
+        should_continue: &impl Fn(&BeanWrapper) -> bool,
+    ) -> Result<(), BeanError> {
+        Self::_check_dependencies_cycle(&history)?;
+        match history.last() {
+            None => panic!("history must contains at least one bean"),
+            Some(v) if dep_map.get(v).is_none() => {
+                // no-op
+            }
+            Some(v) if dep_map.get(v).unwrap().is_empty() => {
+                let bean = beans.get(v).expect("unexpected bean error");
+                if !should_continue(bean) {
+                    return Ok(());
+                }
+                mapper(bean).await?;
+            }
+            Some(v) => {
+                let metas = dep_map.get(v).unwrap();
+                for meta in metas {
+                    let mut cloned = history.clone();
+                    cloned.push(meta.clone());
+                    Self::_do_recursive_async(beans, dep_map, cloned, mapper, should_continue)
+                        .await?;
                 }
             }
         }
@@ -554,9 +610,20 @@ impl AppContextBuilder {
         self._check_init_finished()?;
         self._check_contains_async()?;
         {
-            let dep_tree=self._build_dep_tree(false);
-            let beans=self.inner.lock().expect("unexpected lock");
-                todo!("implement this")
+            let dep_tree = self._build_dep_tree(false);
+            let beans = self.inner.lock().expect("unexpected lock");
+            for (k, v) in &beans.bean_map {
+                if v.is_async() {
+                    panic!("unexpected async bean")
+                }
+                Self::_do_recursive(
+                    &beans.bean_map,
+                    &dep_tree,
+                    vec![k.clone()],
+                    &|s| s.run_init_fn(),
+                    &|s| s.status.load() == BeanStatus::PostConstruct,
+                )?;
+            }
         }
         Ok(AppContext {
             inner: Arc::new(self.inner.into_inner().expect("unexpected lock")),
@@ -565,6 +632,30 @@ impl AppContextBuilder {
 
     pub async fn build_all(self) -> Result<AppContext, BeanError> {
         self._check_init_finished()?;
+        {
+            let dep_tree = self._build_dep_tree(false);
+            let beans = self.inner.lock().expect("unexpected lock");
+            for (k, v) in &beans.bean_map {
+                if v.is_async() {
+                    Self::_do_recursive_async(
+                        &beans.bean_map,
+                        &dep_tree,
+                        vec![k.clone()],
+                        &|s| Box::pin(async {s.run_init_fn_async().await}),
+                        &|s| s.status.load() == BeanStatus::PostConstruct,
+                    ).await?;
+                }else{
+                    Self::_do_recursive(
+                        &beans.bean_map,
+                        &dep_tree,
+                        vec![k.clone()],
+                        &|s| s.run_init_fn(),
+                        &|s| s.status.load() == BeanStatus::PostConstruct,
+                    )?;
+                }
+
+            }
+        }
         Ok(AppContext {
             inner: Arc::new(self.inner.into_inner().expect("unexpected lock")),
         })
@@ -581,21 +672,21 @@ pub(crate) enum CustomFnEnum {
     Async(CustomFnAsync),
 }
 
-impl Debug for CustomFnEnum{
+impl Debug for CustomFnEnum {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self{
+        match self {
             CustomFnEnum::Sync(_) => {
-                write!(f,"`sync fn`")
+                write!(f, "`sync fn`")
             }
             CustomFnEnum::Async(_) => {
-                write!(f,"`async fn`")
+                write!(f, "`async fn`")
             }
         }
     }
 }
 
 /// helper method to build `InitFn`
-pub(crate) fn build_init_fn<Props, E1,  T>() -> CustomFnEnum
+pub(crate) fn build_init_fn<Props, E1, T>() -> CustomFnEnum
 where
     T: BuildFromContext<Props, E1> + Send + Sync + 'static,
 {
@@ -608,9 +699,9 @@ where
     }))
 }
 
-pub(crate) fn build_destroy_fn<Props, E1,  T>() -> CustomFnEnum
-    where
-        T: BuildFromContext<Props, E1> + Send + Sync + 'static,
+pub(crate) fn build_destroy_fn<Props, E1, T>() -> CustomFnEnum
+where
+    T: BuildFromContext<Props, E1> + Send + Sync + 'static,
 {
     CustomFnEnum::Sync(Arc::new(|wrap| {
         let r = wrap.build_bean_ref::<T>().acquire();
@@ -638,8 +729,8 @@ where
 }
 
 pub(crate) fn build_destroy_fn_async<Props, E1, T>() -> CustomFnEnum
-    where
-        T: BuildFromContextAsync<Props, E1> + Send + Sync + 'static,
+where
+    T: BuildFromContextAsync<Props, E1> + Send + Sync + 'static,
 {
     CustomFnEnum::Async(Arc::new(|wrap| {
         Box::pin(async move {
@@ -718,8 +809,8 @@ impl AppContext {
     }
 
     /// whether current `AppContext` do not contains any arc clone
-    pub fn is_last_clone(&self)->bool{
-        Arc::strong_count(&self.inner)==1
+    pub fn is_last_clone(&self) -> bool {
+        Arc::strong_count(&self.inner) == 1
     }
 }
 
@@ -786,7 +877,6 @@ mod tests {
                 config_val: extras,
             })
         }
-
     }
 
     pub struct DaoC {
@@ -838,7 +928,7 @@ mod tests {
             })
         }
 
-        async fn init_self(&self) -> Result<(), Box<dyn Error+Sync+Send>> {
+        async fn init_self(&self) -> Result<(), Box<dyn Error + Sync + Send>> {
             tokio::time::sleep(Duration::from_millis(500)).await;
             Ok(())
         }

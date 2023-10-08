@@ -23,9 +23,9 @@ pub enum BeanError {
     Custom(BeanMetadata, Box<dyn Error + Send + Sync>),
 }
 
-fn pretty_print(v:&Vec<BeanMetadata>)->String{
+fn pretty_print(v: &Vec<BeanMetadata>) -> String {
     v.iter()
-        .map(|m|format!("{}({})",m.bean_name,m.type_name))
+        .map(|m| format!("{}({})", m.bean_name, m.type_name))
         .collect::<Vec<_>>()
         .join(" -> ")
 }
@@ -34,7 +34,7 @@ impl BeanError {
     /// get internal error object when custom error occurs
     pub fn into_internal_err<T>(self) -> Option<T>
     where
-        T: Error+'static,
+        T: Error + 'static,
     {
         if let BeanError::Custom(m, e) = self {
             return e.downcast::<T>().ok().map(|x| *x);

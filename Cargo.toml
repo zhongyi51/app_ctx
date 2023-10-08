@@ -1,6 +1,6 @@
 [package]
 name = "app_ctx"
-version = "0.1.5"
+version = "0.2.0-SNAPSHOT"
 edition = "2021"
 authors = ["zhongyi"]
 description = "An AppCtx implementation in Rust, like ApplicationContext in SpringBoot"
@@ -14,6 +14,7 @@ once_cell = "1"
 async-trait = "0.1"
 thiserror = "1"
 crossbeam = "0.8"
+async-recursion = "1"
 
 [dev-dependencies]
 tokio = {version = "1",features=["test-util","macros"]}
