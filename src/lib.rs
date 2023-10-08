@@ -660,6 +660,8 @@ impl AppContextBuilder {
             inner: Arc::new(self.inner.into_inner().expect("unexpected lock")),
         })
     }
+
+    /// todo: destroy method, events, better error handling...
 }
 
 pub(crate) type CustomFn = Arc<dyn Fn(BeanWrapper) -> Result<(), BeanError>>;
