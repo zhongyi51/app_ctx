@@ -3,6 +3,10 @@ mod event;
 mod util;
 
 use crate::error::{AppContextDroppedError, BeanError, EventError};
+use crate::event::{
+    AppEvent, AppEventListener, AppEventListenerAsync, DefaultExecutor, ErasedListener,
+    EventExecutor, EventExecutorAsync,
+};
 use crossbeam::atomic::AtomicCell;
 use once_cell::sync::OnceCell;
 use std::any::{type_name, Any};
@@ -15,7 +19,6 @@ use std::mem;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
-use crate::event::{AppEventListener, AppEventListenerAsync, DefaultExecutor, ErasedListener, EventExecutor, EventExecutorAsync};
 
 /// metadata of a bean. it can be used as map key
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -383,9 +386,9 @@ impl BeanWrapper {
 /// the `Arc<...>` stores beans with lazy initialization
 pub struct AppContextInner {
     bean_map: HashMap<BeanMetadata, BeanWrapper>,
-    event_listeners: HashMap<&'static str,ErasedListener>,
-    event_executor:Box<dyn EventExecutor+Sync>,
-    event_executor_async:Box<dyn EventExecutorAsync+Sync>
+    event_listeners: HashMap<&'static str, ErasedListener>,
+    event_executor: Box<dyn EventExecutor + Sync + Send>,
+    event_executor_async: Box<dyn EventExecutorAsync + Sync + Send>,
 }
 
 /// the context to store all beans.
@@ -487,12 +490,15 @@ impl AppContextBuilder {
     /// each event type can only has one listener.
     /// the listener should be either sync or async.
     /// if a listener with same event type exists, it will be replaced
-    pub fn add_event_listener<E:'static>(self,listener:impl AppEventListener<EventType=E>+Send+Sync+'static)->Self{
+    pub fn add_event_listener<E: 'static>(
+        self,
+        listener: impl AppEventListener<EventType = E> + Send + Sync + 'static,
+    ) -> Self {
         self.inner
             .lock()
             .expect("unexpected lock")
             .event_listeners
-            .insert(type_name::<E>(),ErasedListener::sync_one(listener));
+            .insert(type_name::<E>(), ErasedListener::sync_one(listener));
         self
     }
 
@@ -500,33 +506,45 @@ impl AppContextBuilder {
     /// each event type can only has one listener.
     /// the listener should be either sync or async.
     /// if a listener with same event type exists, it will be replaced
-    pub fn add_event_listener_async<E:'static>(self,listener:impl AppEventListenerAsync<EventType=E>+Send+Sync+'static)->Self{
+    pub fn add_event_listener_async<E: 'static>(
+        self,
+        listener: impl AppEventListenerAsync<EventType = E> + Send + Sync + 'static,
+    ) -> Self {
         self.inner
             .lock()
             .expect("unexpected lock")
             .event_listeners
-            .insert(type_name::<E>(),ErasedListener::async_one(listener));
+            .insert(type_name::<E>(), ErasedListener::async_one(listener));
         self
     }
 
     /// custom sync event executor
-    pub fn set_event_executor(self,executor:impl EventExecutor+Sync+'static)->Self{
+    pub fn set_event_executor(self, executor: impl EventExecutor + Sync + Send + 'static) -> Self {
         {
-            let r = &mut self.inner.lock()
-                .expect("unexpected lock")
-                .event_executor;
-            mem::swap(&mut (Box::new(executor) as Box<dyn EventExecutor + Sync + 'static>), r);
+            let r = &mut self.inner.lock().expect("unexpected lock").event_executor;
+            mem::swap(
+                &mut (Box::new(executor) as Box<dyn EventExecutor + Send + Sync + 'static>),
+                r,
+            );
         }
         self
     }
 
     /// custom async event executor
-    pub fn set_event_executor_async(self,executor:impl EventExecutorAsync+Sync+'static)->Self{
+    pub fn set_event_executor_async(
+        self,
+        executor: impl EventExecutorAsync + Sync + Send + 'static,
+    ) -> Self {
         {
-            let r = &mut self.inner.lock()
+            let r = &mut self
+                .inner
+                .lock()
                 .expect("unexpected lock")
                 .event_executor_async;
-            mem::swap(&mut (Box::new(executor) as Box<dyn EventExecutorAsync + Sync + 'static>), r);
+            mem::swap(
+                &mut (Box::new(executor) as Box<dyn EventExecutorAsync + Send + Sync + 'static>),
+                r,
+            );
         }
         self
     }
@@ -606,10 +624,7 @@ impl AppContextBuilder {
         Self::_check_dependencies_cycle(&history)?;
         match history.last() {
             None => panic!("history must contains at least one bean"),
-            Some(v) if dep_map.get(v).is_none() => {
-                // no-op
-            }
-            Some(v) if dep_map.get(v).unwrap().is_empty() => {
+            Some(v) if dep_map.get(v).is_none() || dep_map.get(v).unwrap().is_empty() => {
                 let bean = beans.get(v).expect("unexpected bean error");
                 if !should_continue(bean) {
                     return Ok(());
@@ -633,16 +648,13 @@ impl AppContextBuilder {
         beans: &HashMap<BeanMetadata, BeanWrapper>,
         dep_map: &HashMap<BeanMetadata, Vec<BeanMetadata>>,
         history: Vec<BeanMetadata>,
-        mapper: &impl Fn(&BeanWrapper) -> Pin<Box<dyn Future<Output = Result<(), BeanError>>+'_>>,
+        mapper: &impl Fn(&BeanWrapper) -> Pin<Box<dyn Future<Output = Result<(), BeanError>> + '_>>,
         should_continue: &impl Fn(&BeanWrapper) -> bool,
     ) -> Result<(), BeanError> {
         Self::_check_dependencies_cycle(&history)?;
         match history.last() {
             None => panic!("history must contains at least one bean"),
-            Some(v) if dep_map.get(v).is_none() => {
-                // no-op
-            }
-            Some(v) if dep_map.get(v).unwrap().is_empty() => {
+            Some(v) if dep_map.get(v).is_none() || dep_map.get(v).unwrap().is_empty() => {
                 let bean = beans.get(v).expect("unexpected bean error");
                 if !should_continue(bean) {
                     return Ok(());
@@ -697,10 +709,11 @@ impl AppContextBuilder {
                         &beans.bean_map,
                         &dep_tree,
                         vec![k.clone()],
-                        &|s| Box::pin(async {s.run_init_fn_async().await}),
+                        &|s| Box::pin(async { s.run_init_fn_async().await }),
                         &|s| s.status.load() == BeanStatus::PostConstruct,
-                    ).await?;
-                }else{
+                    )
+                    .await?;
+                } else {
                     Self::_do_recursive(
                         &beans.bean_map,
                         &dep_tree,
@@ -709,7 +722,6 @@ impl AppContextBuilder {
                         &|s| s.status.load() == BeanStatus::PostConstruct,
                     )?;
                 }
-
             }
         }
         Ok(AppContext {
@@ -720,9 +732,9 @@ impl AppContextBuilder {
     // todo: destroy method, events, better error handling...
 }
 
-pub(crate) type CustomFn = Arc<dyn Fn(BeanWrapper) -> Result<(), BeanError>>;
+pub(crate) type CustomFn = Arc<dyn Fn(BeanWrapper) -> Result<(), BeanError> + Sync + Send>;
 pub(crate) type CustomFnAsync =
-    Arc<dyn Fn(BeanWrapper) -> Pin<Box<dyn Future<Output = Result<(), BeanError>>>>>;
+    Arc<dyn Fn(BeanWrapper) -> Pin<Box<dyn Future<Output = Result<(), BeanError>>>> + Sync + Send>;
 
 #[derive(Clone)]
 pub(crate) enum CustomFnEnum {
@@ -868,29 +880,47 @@ impl AppContext {
 
     /// send an event to a sync listener.
     /// if the listener is not sync, an error will be returned
-    pub fn send_sync_event<E:Send+'static>(&self,event:E)->Result<(),EventError>{
-        let listener=self.inner.event_listeners
+    pub fn send_sync_event<E: Send + 'static>(&self, event: AppEvent<E>) -> Result<(), EventError> {
+        let listener = self
+            .inner
+            .event_listeners
             .get(type_name::<E>())
             .ok_or(EventError::NoListener(type_name::<E>()))?;
-        if listener.is_async(){
+        if listener.is_async() {
             return Err(EventError::AsyncListener(type_name::<E>()));
         }
-        listener.deal_sync(event,&self.inner.event_executor);
+        listener.deal_sync(event, &self.inner.event_executor);
         Ok(())
     }
 
-
     /// send an event to a async listener.
     /// if the listener is not sync, an error will be returned
-    pub async fn send_async_event<E:Send+'static>(&self,event:E)->Result<(),EventError>{
-        let listener=self.inner.event_listeners
+    pub async fn send_async_event<E: Send + 'static>(
+        &self,
+        event: AppEvent<E>,
+    ) -> Result<(), EventError> {
+        let listener = self
+            .inner
+            .event_listeners
             .get(type_name::<E>())
             .ok_or(EventError::NoListener(type_name::<E>()))?;
-        if !listener.is_async(){
+        if !listener.is_async() {
             return Err(EventError::SyncListener(type_name::<E>()));
         }
-        listener.deal_async(event,&self.inner.event_executor_async).await;
+        listener
+            .deal_async(event, &self.inner.event_executor_async)
+            .await;
         Ok(())
+    }
+
+    /// destroy all beans.
+    /// if there is any async bean, a panic will be raised
+    pub fn clean_up(self) {
+        todo!("implement this")
+    }
+
+    pub async fn clean_up_async(self) {
+        todo!("implement this")
     }
 
     /// whether current `AppContext` do not contains any arc clone
@@ -902,15 +932,18 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::{FnAsyncListener, FnListener};
     use anyhow::bail;
     use async_trait::async_trait;
+    use std::sync::atomic::{AtomicI8, Ordering};
     use std::time::Duration;
-    use crate::event::{FnAsyncListener, FnListener};
 
     pub struct ServiceA {
         svc_b: BeanRef<ServiceB>,
 
         dao: BeanRef<DaoC>,
+
+        counter: AtomicI8,
     }
 
     impl ServiceA {
@@ -931,7 +964,15 @@ mod tests {
                 svc_b: ctx.acquire_bean_or_init(ServiceB::BEAN_TYPE, "b"),
 
                 dao: ctx.acquire_bean_or_init(DaoC::BEAN_TYPE, "c"),
+                counter: AtomicI8::new(0),
             })
+        }
+
+        fn init_self(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+            self.dao.acquire().check();
+            println!("init fn run");
+            self.counter.fetch_add(1, Ordering::AcqRel);
+            Ok(())
         }
     }
 
@@ -1034,17 +1075,22 @@ mod tests {
                 .construct_bean_async(DaoD::BEAN_TYPE, "d", 5_usize)
                 .await
                 .unwrap()
-                .add_event_listener(FnListener::wrap(|s:String|println!("{}",s)))
-                .add_event_listener_async(FnAsyncListener::wrap(|i:i32|Box::pin(async move{println!("{}",i)})))
+                .add_event_listener(FnListener::wrap(|s: AppEvent<String>| {
+                    println!("{}", s.data())
+                }))
+                .add_event_listener_async(FnAsyncListener::wrap(|i: AppEvent<i32>| {
+                    Box::pin(async move { println!("{}", i.data()) })
+                }))
                 .build_all()
                 .await?;
 
-            ctx.send_sync_event("sss".to_string())?;
-            ctx.send_async_event(2).await?;
+            ctx.send_sync_event(AppEvent::sync_one("sss".to_string()))?;
+            ctx.send_async_event(AppEvent::async_one(2)).await?;
 
             //test each bean
             let svc_a = ctx.acquire_bean(ServiceA::BEAN_TYPE, "a");
             svc_a.acquire().check();
+            assert_eq!(svc_a.acquire().counter.load(Ordering::SeqCst), 1);
 
             let svc_b = ctx.acquire_bean(ServiceB::BEAN_TYPE, "b");
             svc_b.acquire().check();
