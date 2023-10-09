@@ -2,7 +2,7 @@ mod error;
 mod event;
 mod util;
 
-use crate::error::{AppContextDroppedError, BeanError};
+use crate::error::{AppContextDroppedError, BeanError, EventError};
 use crossbeam::atomic::AtomicCell;
 use once_cell::sync::OnceCell;
 use std::any::{type_name, Any};
@@ -11,9 +11,11 @@ use std::error::Error;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::marker::PhantomData;
+use std::mem;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
+use crate::event::{AppEventListener, AppEventListenerAsync, DefaultExecutor, ErasedListener, EventExecutor, EventExecutorAsync};
 
 /// metadata of a bean. it can be used as map key
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -381,6 +383,9 @@ impl BeanWrapper {
 /// the `Arc<...>` stores beans with lazy initialization
 pub struct AppContextInner {
     bean_map: HashMap<BeanMetadata, BeanWrapper>,
+    event_listeners: HashMap<&'static str,ErasedListener>,
+    event_executor:Box<dyn EventExecutor+Sync>,
+    event_executor_async:Box<dyn EventExecutorAsync+Sync>
 }
 
 /// the context to store all beans.
@@ -396,6 +401,9 @@ impl AppContextBuilder {
         Self {
             inner: Mutex::new(AppContextInner {
                 bean_map: Default::default(),
+                event_listeners: Default::default(),
+                event_executor: Box::new(DefaultExecutor),
+                event_executor_async: Box::new(DefaultExecutor),
             }),
         }
     }
@@ -473,6 +481,54 @@ impl AppContextBuilder {
         Ok(AppContext {
             inner: Arc::new(self.inner.into_inner().expect("unexpected lock")),
         })
+    }
+
+    /// add sync event listener.
+    /// each event type can only has one listener.
+    /// the listener should be either sync or async.
+    /// if a listener with same event type exists, it will be replaced
+    pub fn add_event_listener<E:'static>(self,listener:impl AppEventListener<EventType=E>+Send+Sync+'static)->Self{
+        self.inner
+            .lock()
+            .expect("unexpected lock")
+            .event_listeners
+            .insert(type_name::<E>(),ErasedListener::sync_one(listener));
+        self
+    }
+
+    /// add async event listener
+    /// each event type can only has one listener.
+    /// the listener should be either sync or async.
+    /// if a listener with same event type exists, it will be replaced
+    pub fn add_event_listener_async<E:'static>(self,listener:impl AppEventListenerAsync<EventType=E>+Send+Sync+'static)->Self{
+        self.inner
+            .lock()
+            .expect("unexpected lock")
+            .event_listeners
+            .insert(type_name::<E>(),ErasedListener::async_one(listener));
+        self
+    }
+
+    /// custom sync event executor
+    pub fn set_event_executor(self,executor:impl EventExecutor+Sync+'static)->Self{
+        {
+            let r = &mut self.inner.lock()
+                .expect("unexpected lock")
+                .event_executor;
+            mem::swap(&mut (Box::new(executor) as Box<dyn EventExecutor + Sync + 'static>), r);
+        }
+        self
+    }
+
+    /// custom async event executor
+    pub fn set_event_executor_async(self,executor:impl EventExecutorAsync+Sync+'static)->Self{
+        {
+            let r = &mut self.inner.lock()
+                .expect("unexpected lock")
+                .event_executor_async;
+            mem::swap(&mut (Box::new(executor) as Box<dyn EventExecutorAsync + Sync + 'static>), r);
+        }
+        self
     }
 
     fn _build_dep_tree(&self, reverse: bool) -> HashMap<BeanMetadata, Vec<BeanMetadata>> {
@@ -661,7 +717,7 @@ impl AppContextBuilder {
         })
     }
 
-    /// todo: destroy method, events, better error handling...
+    // todo: destroy method, events, better error handling...
 }
 
 pub(crate) type CustomFn = Arc<dyn Fn(BeanWrapper) -> Result<(), BeanError>>;
@@ -810,6 +866,33 @@ impl AppContext {
             .collect()
     }
 
+    /// send an event to a sync listener.
+    /// if the listener is not sync, an error will be returned
+    pub fn send_sync_event<E:Send+'static>(&self,event:E)->Result<(),EventError>{
+        let listener=self.inner.event_listeners
+            .get(type_name::<E>())
+            .ok_or(EventError::NoListener(type_name::<E>()))?;
+        if listener.is_async(){
+            return Err(EventError::AsyncListener(type_name::<E>()));
+        }
+        listener.deal_sync(event,&self.inner.event_executor);
+        Ok(())
+    }
+
+
+    /// send an event to a async listener.
+    /// if the listener is not sync, an error will be returned
+    pub async fn send_async_event<E:Send+'static>(&self,event:E)->Result<(),EventError>{
+        let listener=self.inner.event_listeners
+            .get(type_name::<E>())
+            .ok_or(EventError::NoListener(type_name::<E>()))?;
+        if !listener.is_async(){
+            return Err(EventError::SyncListener(type_name::<E>()));
+        }
+        listener.deal_async(event,&self.inner.event_executor_async).await;
+        Ok(())
+    }
+
     /// whether current `AppContext` do not contains any arc clone
     pub fn is_last_clone(&self) -> bool {
         Arc::strong_count(&self.inner) == 1
@@ -822,6 +905,7 @@ mod tests {
     use anyhow::bail;
     use async_trait::async_trait;
     use std::time::Duration;
+    use crate::event::{FnAsyncListener, FnListener};
 
     pub struct ServiceA {
         svc_b: BeanRef<ServiceB>,
@@ -950,8 +1034,13 @@ mod tests {
                 .construct_bean_async(DaoD::BEAN_TYPE, "d", 5_usize)
                 .await
                 .unwrap()
+                .add_event_listener(FnListener::wrap(|s:String|println!("{}",s)))
+                .add_event_listener_async(FnAsyncListener::wrap(|i:i32|Box::pin(async move{println!("{}",i)})))
                 .build_all()
                 .await?;
+
+            ctx.send_sync_event("sss".to_string())?;
+            ctx.send_async_event(2).await?;
 
             //test each bean
             let svc_a = ctx.acquire_bean(ServiceA::BEAN_TYPE, "a");
