@@ -4,8 +4,8 @@ use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use thiserror::Error;
 
-#[derive(Error,Debug)]
-pub enum EventError{
+#[derive(Error, Debug)]
+pub enum EventError {
     /// if an event does not has any listener
     #[error("event with type `{0}` does not have any listener")]
     NoListener(&'static str),
@@ -14,11 +14,9 @@ pub enum EventError{
     #[error("event with type `{0}` only has async listener, which cannot be run in sync context")]
     AsyncListener(&'static str),
 
-/// if the executor is not sync
-#[error("event with type `{0}` only has sync listener, which cannot be run in async context")]
-SyncListener(&'static str)
-
-
+    /// if the executor is not sync
+    #[error("event with type `{0}` only has sync listener, which cannot be run in async context")]
+    SyncListener(&'static str),
 }
 
 #[derive(Error, Debug)]
